@@ -3,8 +3,8 @@
 
 repositories:
   gooey-server:
-    path: "~/code/gooey-server"          # change to your local checkout
-    github_repo: "your-org/gooey-server"
+    path: "~/code/core-app/gooey-server"          # change to your local checkout
+    github_repo: "https://github.com/GooeyAI/GooeyAI"
     default_branch: "main"
     test_command: ""                     # e.g. "pytest" (used from Phase 4)
     enabled: true
