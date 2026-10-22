@@ -1,0 +1,54 @@
+# Kue configuration.
+# Secrets never go in this file. Put them in ~/.kue/.env (see .env.example).
+
+repositories:
+  gooey-server:
+    path: "~/code/core-app/gooey-server"          # change to your local checkout
+    github_repo: "https://github.com/GooeyAI/GooeyAI"
+    default_branch: "main"
+    test_command: ""                     # e.g. "pytest" (used from Phase 4)
+    enabled: true
+
+scheduler:
+  interval_minutes: 60
+
+workspace:
+  # in_place: the agent works inside your own checkout.
+  mode: in_place
+  # When the repo has uncommitted changes (or untracked files):
+  #   skip           -> leave the task queued and try again next cycle
+  #   require_review -> move the task to REQUIRES_HUMAN_REVIEW
+  dirty_tree_action: skip
+
+autonomy:
+  auto_commit: true
+  auto_push: true
+  auto_create_pr: true
+  # never         -> only open PRs
+  # when_approved -> turn on GitHub auto-merge; merges after approval + passing CI
+  merge_mode: when_approved
+  max_changed_lines: 400
+  require_review_for:
+    - database_migration
+    - security
+    - infrastructure
+    - production_config
+    - destructive_operation
+
+limits:
+  max_attempts: 3
+  max_runs_per_day: 10
+  task_timeout_minutes: 45
+
+claude:
+  command: "claude"
+
+github:
+  command: "gh"
+
+database:
+  path: "~/.kue/state.db"
+
+logging:
+  dir: "~/.kue/logs"
+  level: "INFO"
