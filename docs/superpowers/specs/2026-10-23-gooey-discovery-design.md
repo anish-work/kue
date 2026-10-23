@@ -132,9 +132,20 @@ names, or null), `priority` (0–5, the meanings from `tasks/models.py`),
 - Kue builds `external_id` itself: `asana:<gid>` if there is an Asana id, otherwise
   `discord:<message_id>`. `source` is `"gooey"`. Dedup on `(source, external_id)`
   already exists.
-- An item that fails validation, or has neither id, becomes a review proposal: the
-  title if there is one (otherwise "Unreadable task from Gooey"), the item's JSON as
-  the description, `external_id = gooey-run:<run_id>:<index>`, and a `review_reason`.
+- Identity comes first. When an item carries a valid id, its `external_id` comes from
+  that id even if other fields are bad, so a bad item reported again next cycle can't
+  create a second task. A missing or out-of-range `priority` falls back to P4 instead
+  of sending the item to review.
+- An item that still fails validation (no usable title, or not an object), or has
+  neither id, becomes a review proposal: the title if there is one (otherwise
+  "Unreadable task from Gooey"), the item's JSON as the description, and a
+  `review_reason`. Its `external_id` is the id-based one when a valid id exists, and
+  `gooey-run:<run_id>:<index>` otherwise.
+- Dedup also matches on either id within the same source. If Gooey first reports
+  Discord message X alone and later reports it linked to Asana task Y, the second
+  report finds the first task through X and only bumps `last_seen_at`. The newly
+  learned Asana id isn't copied onto the existing task; Phase 7 adds that when Asana
+  write-back needs it. This lives in `Store.upsert_proposal`.
 - A repository name Gooey invents is not special-cased: triage already sends unknown
   repos to review with "Repository 'x' is not in the config."
 
@@ -143,7 +154,10 @@ second time with `messages = [the prompt as user, the bad reply as assistant]` a
 `input_prompt` that names the problem and asks for only the JSON block. If that reply
 fails too, the fetch returns a single review proposal: "Gooey's reply couldn't be
 read", the raw text and both run links in the description,
-`external_id = gooey-run:<second run_id>`.
+`external_id = gooey-run:<second run_id>`. The fetch counts as successful, so the
+cursor moves on. That's deliberate: the work in that window reaches Anish as raw text
+in the review task, and Kue can never get stuck re-asking about a window the agent
+keeps failing on.
 
 **Raw replies.** Every reply is saved to `<database dir>/replies/<run_id>.txt`
 (`~/.kue/replies/` by default) and logged with its `web_url`. In a dry run nothing is
@@ -206,3 +220,7 @@ structure, within the rules above.
 - The discovery agent's `example_id`. Until it's set, Gooey discovery is off.
 - Confirm that agent has only read tools for Discord and Asana.
 - Cost and run time per agent call are unknown; check them after the first real runs.
+- Gooey's suggested priority is stored as given and sorts the queue, which is the
+  literal reading of "an LLM may suggest a priority; it never controls scheduling"
+  (the selection rule stays deterministic). Before Phase 4 starts executing tasks,
+  decide whether Gooey's P0/P1 should be capped without a human.

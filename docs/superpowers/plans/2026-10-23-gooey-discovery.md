@@ -133,10 +133,12 @@ And `test_proposals_from_items`:
   - `{"title": "Fix it", "asana_task_id": 1203, "discord_message_id": "99", "repository": "gooey-server", "priority": 1, "extra": "ignored"}` → one proposal, `source == "gooey"`, `external_id == "asana:1203"`, `asana_task_id == "1203"`, no `review_reason`.
   - Discord only → `external_id == "discord:99"`.
   - No ids → review proposal, `external_id == "gooey-run:r1:0"`, `review_reason` mentions `Asana or Discord`.
-  - `{"title": "", "asana_task_id": "1"}`, `{"asana_task_id": "abc", "title": "x"}`, `{"title": "x", "priority": 9, "asana_task_id": "1"}`, and the non-dict `"just text"` → each becomes a review proposal with index-based `external_id`; the non-dict one is titled `Unreadable task from Gooey`.
+  - `{"title": "x", "priority": 9, "asana_task_id": "1"}` and `{"title": "x", "priority": "high", "asana_task_id": "1"}` → normal proposals with `priority == 4`.
+  - `{"title": "", "asana_task_id": "1"}` → review proposal keyed `asana:1` (identity first).
+  - `{"asana_task_id": "abc", "title": "x"}` and the non-dict `"just text"` → review proposals keyed `gooey-run:r1:<index>`; the non-dict one is titled `Unreadable task from Gooey`.
   - An item whose JSON is longer than 4000 characters → review proposal `description` length ≤ 4000.
 - [ ] **Step 2: Run** `pytest tests/test_gooey_parsing.py -v`. Expected: FAIL on import.
-- [ ] **Step 3: Implement.** A private pydantic `ProposedTask` (`extra="ignore"`): `title` 1–200 chars after stripping, `description` (None → `""`), `repository` (blank → None), `priority` 0–5 default 4, `asana_task_id` / `discord_message_id` converted from int to str, blank → None, must match `^\d{1,32}$`. Fence regex: ```` r"```[^\n]*\n(.*?)```" ```` with `re.DOTALL`, take the last match. Review reasons for invalid items summarise `ValidationError.errors()` as `field: message` pairs, capped at 300 characters.
+- [ ] **Step 3: Implement.** Read the ids first: an id is usable if, after converting an int to str and stripping, it matches `^\d{1,32}$`; the external id comes from the usable ids (Asana first). Then a private pydantic `ProposedTask` (`extra="ignore"`): `title` 1–200 chars after stripping, `description` (None → `""`), `repository` (blank → None), `priority` 0–5 where anything missing or invalid becomes 4. Fence regex: ```` r"```[^\n]*\n(.*?)```" ```` with `re.DOTALL`, take the last match. Review reasons for invalid items summarise `ValidationError.errors()` as `field: message` pairs, capped at 300 characters.
 - [ ] **Step 4: Run** `pytest tests/test_gooey_parsing.py -v`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(gooey): parse agent replies into task proposals`.
 
@@ -172,6 +174,8 @@ And `test_proposals_from_items`:
 **Files:**
 - Modify: `src/kue/orchestration/sources.py` (protocol signature, `configured_sources`)
 - Modify: `src/kue/orchestration/orchestrator.py` (`_discover`)
+- Modify: `src/kue/database/repositories.py` (`upsert_proposal` also matches on `asana_task_id` / `discord_message_id` within the same source)
+- Test: `tests/test_database.py` (`test_upsert_matches_on_either_id_within_source`: a `gooey` task `discord:99` with `discord_message_id="99"`, then a proposal `asana:7` with `asana_task_id="7"`, `discord_message_id="99"` → `created is False`, one task, its `external_id` still `discord:99`; the same ids under source `manual` create a new task)
 - Modify: `src/kue/cli/commands.py` (`run_once` uses `configured_sources`)
 - Modify: `tests/test_orchestrator.py` (`FakeSource.fetch(since, *, dry_run)` records its arguments)
 - Test: `tests/test_orchestrator.py`, `tests/test_cli.py`
