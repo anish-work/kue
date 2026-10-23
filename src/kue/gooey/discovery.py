@@ -1,13 +1,23 @@
-"""Gooey discovery: the reply contract, and parsing the agent's reply into task proposals."""
+"""Gooey discovery: the prompt Kue sends, the reply contract, and parsing replies into proposals.
+
+Kue owns the prompt and the contract because they change together with the parser. The
+agent's own instructions in Gooey cover how it uses its Discord and Asana tools.
+"""
 from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from kue.events.logger import get_logger
+from kue.gooey.client import AgentReply, ChatMessage, GooeyClient
 from kue.tasks.models import Priority, TaskProposal
+
+log = get_logger("gooey")
 
 SOURCE = "gooey"
 MAX_DESCRIPTION = 4000
@@ -18,6 +28,104 @@ _ID = re.compile(r"^\d{1,32}$")  # Asana gids and Discord snowflakes are both nu
 
 class ReplyFormatError(ValueError):
     """The agent's reply as a whole couldn't be read."""
+
+
+_PROMPT = """\
+Find engineering work for Anish that appeared or changed {since} in the Discord \
+channels and Asana projects you can read. Only include work that needs a code change \
+in one of these repositories: {repositories}. Skip chatter, answered questions and work \
+that's already done.
+
+Reply with exactly one fenced JSON block in this shape:
+
+```json
+{{"tasks": [{{"title": "Fix the Twilio webhook retry crash", "description": "What's wrong, \
+what done looks like, and links", "repository": "{example_repository}", "priority": 1, \
+"asana_task_id": "1203456789012345", "discord_message_id": "1157123456789012345"}}]}}
+```
+
+- title: one short line saying what needs doing.
+- description: the context a developer needs, with links.
+- repository: one of the repositories above, or null if you can't tell.
+- priority: 0 production outage, 1 production bug, 2 assigned to Anish, 3 due soon, \
+4 normal, 5 nice to have.
+- asana_task_id: the Asana task's numeric gid, if the work is tracked in Asana.
+- discord_message_id: the numeric id of the Discord message where it came up, if any.
+
+Every task needs at least one of the two ids. If there's nothing new, reply with \
+{{"tasks": []}} inside the block.
+"""
+
+_RETRY_PROMPT = (
+    "Kue couldn't read your last reply: {problem} Reply again with only the fenced JSON "
+    "block described in the first message, and nothing after it."
+)
+
+
+def build_prompt(since: datetime | None, repositories: list[str]) -> str:
+    if since is None:
+        window = "in the last 24 hours"
+    else:
+        window = f"since {since.astimezone(UTC).isoformat(timespec='seconds')}"
+    return _PROMPT.format(
+        since=window,
+        repositories=", ".join(repositories) or "(none are configured)",
+        example_repository=repositories[0] if repositories else "gooey-server",
+    )
+
+
+class GooeySource:
+    """A DiscoverySource that asks one published Gooey agent for new work."""
+
+    name = SOURCE
+
+    def __init__(self, client: GooeyClient, example_id: str, repositories: list[str], replies_dir: Path) -> None:
+        self._client = client
+        self._example_id = example_id
+        self._repositories = repositories
+        self._replies_dir = replies_dir
+
+    async def fetch(self, since: datetime | None, *, dry_run: bool) -> list[TaskProposal]:
+        prompt = build_prompt(since, self._repositories)
+        first = await self._ask(prompt, [], dry_run=dry_run)
+        try:
+            return proposals_from_items(extract_tasks(first.text), run_id=first.run_id)
+        except ReplyFormatError as exc:
+            problem = str(exc)
+
+        history: list[ChatMessage] = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": first.text},
+        ]
+        retry = await self._ask(_RETRY_PROMPT.format(problem=problem), history, dry_run=dry_run)
+        try:
+            return proposals_from_items(extract_tasks(retry.text), run_id=retry.run_id)
+        except ReplyFormatError as exc:
+            return [_unreadable(first, retry, str(exc))]
+
+    async def _ask(self, prompt: str, messages: list[ChatMessage], *, dry_run: bool) -> AgentReply:
+        reply = await self._client.run_agent(self._example_id, prompt, messages)
+        saved_to = None
+        if not dry_run:
+            self._replies_dir.mkdir(parents=True, exist_ok=True)
+            saved_to = self._replies_dir / f"{reply.run_id}.txt"
+            saved_to.write_text(reply.text, encoding="utf-8")
+        log.info("gooey reply", extra={"data": {
+            "run_id": reply.run_id, "web_url": reply.web_url, "chars": len(reply.text),
+            "saved_to": str(saved_to) if saved_to else None,
+        }})
+        return reply
+
+
+def _unreadable(first: AgentReply, retry: AgentReply, problem: str) -> TaskProposal:
+    description = f"Gooey runs: {first.web_url} and {retry.web_url}\n\nLast reply:\n{retry.text}"
+    return TaskProposal(
+        source=SOURCE,
+        external_id=f"gooey-run:{retry.run_id}",
+        title="Gooey's reply couldn't be read",
+        description=description[:MAX_DESCRIPTION],
+        review_reason=f"Gooey's reply couldn't be read, twice: {problem}",
+    )
 
 
 def extract_tasks(text: str) -> list[Any]:
