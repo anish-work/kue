@@ -33,6 +33,18 @@ def test_upsert_deduplicates_same_source_and_id(store):
     assert len(created_events) == 1
 
 
+def test_upsert_matches_on_either_id_within_source(store):
+    first, _ = store.upsert_proposal(proposal("discord:99", source="gooey", discord_message_id="99"))
+    again, created = store.upsert_proposal(
+        proposal("asana:7", source="gooey", asana_task_id="7", discord_message_id="99")
+    )
+    assert not created and again.id == first.id
+    assert again.external_id == "discord:99" and again.asana_task_id is None
+    assert len(store.list_tasks()) == 1
+    _, other_source = store.upsert_proposal(proposal("asana:7", source="manual", asana_task_id="7", discord_message_id="99"))
+    assert other_source
+
+
 def test_same_external_id_different_source_is_separate(store):
     store.upsert_proposal(proposal(source="discord"))
     store.upsert_proposal(proposal(source="asana"))

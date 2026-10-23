@@ -34,6 +34,7 @@ from kue.orchestration.state_machine import (
     WORKER_BUSY,
     InvalidTransition,
 )
+from kue.orchestration.sources import configured_sources
 from kue.tasks.models import Task, TaskProposal, TaskStatus
 
 app = typer.Typer(
@@ -260,7 +261,11 @@ def run_once(
 ) -> None:
     """Run a single orchestration cycle."""
     cfg, store = _load()
-    orchestrator = Orchestrator(cfg, store, sources=[])
+    try:
+        sources = configured_sources(cfg, load_secrets())
+    except ConfigError as exc:
+        raise _fail(str(exc), 2) from exc
+    orchestrator = Orchestrator(cfg, store, sources=sources)
     try:
         report = asyncio.run(orchestrator.run_cycle(dry_run=dry_run, only_task_id=task_id))
     except AlreadyRunning as exc:

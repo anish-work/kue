@@ -153,10 +153,14 @@ class Orchestrator:
 
     async def _discover(self, report: CycleReport, write: bool) -> None:
         if not self.sources:
-            report.notes.append("No discovery sources configured yet (Gooey arrives in Phase 2).")
+            report.notes.append(
+                "No discovery sources are on. Set gooey.agent_example_id in config.yaml to use Gooey."
+            )
         for source in self.sources:
+            since = self._since(source.name)
+            started = self.clock()  # the next cursor; overlap with the next fetch is safe (dedup)
             try:
-                proposals = await source.fetch()
+                proposals = await source.fetch(since, dry_run=not write)
             except Exception as exc:  # recorded, never silent
                 report.source_errors[source.name] = str(exc)
                 log.exception("source sync failed", extra={"data": {"source": source.name}})
@@ -168,17 +172,34 @@ class Orchestrator:
                 continue
             for proposal in proposals:
                 if write:
-                    _, created = self.store.upsert_proposal(proposal)
+                    task, created = self.store.upsert_proposal(proposal)
+                    if created and proposal.review_reason:
+                        self.store.transition(
+                            task.id, TaskStatus.REQUIRES_HUMAN_REVIEW, reason=proposal.review_reason
+                        )
                 else:
-                    created = self.store.find_by_external(proposal.source, proposal.external_id) is None
+                    created = self.store.find_existing(proposal) is None
                     label = "new" if created else "already known"
+                    if proposal.review_reason:
+                        label += f", needs review: {proposal.review_reason}"
                     report.proposal_previews.append(f"[{proposal.source}] {proposal.title} ({label})")
                 if created:
                     report.new_tasks += 1
                 else:
                     report.seen_again += 1
             if write:
-                self.store.set_cursor(source.name, None)
+                self.store.set_cursor(source.name, iso(started))
+
+    def _since(self, source_name: str) -> datetime | None:
+        cursor, _ = self.store.get_cursor(source_name)
+        if not cursor:
+            return None
+        try:
+            return datetime.fromisoformat(cursor)
+        except ValueError:
+            log.warning("ignoring unreadable discovery cursor",
+                        extra={"data": {"source": source_name, "cursor": cursor}})
+            return None
 
     def _triage(self, report: CycleReport, write: bool) -> None:
         pending = self.store.list_tasks(statuses=[TaskStatus.DISCOVERED, TaskStatus.TRIAGED])

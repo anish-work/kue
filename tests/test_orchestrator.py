@@ -2,8 +2,12 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import SecretStr
 
+from kue.config.models import GooeyConfig
+from kue.config.settings import ConfigError, Secrets
 from kue.events.logger import EventType
+from kue.orchestration.sources import configured_sources
 from kue.orchestration.orchestrator import (
     AlreadyRunning,
     Orchestrator,
@@ -18,10 +22,10 @@ class FakeSource:
         self.name = name
         self.proposals = proposals or []
         self.error = error
-        self.calls = 0
+        self.calls = []
 
-    async def fetch(self):
-        self.calls += 1
+    async def fetch(self, since, *, dry_run):
+        self.calls.append((since, dry_run))
         if self.error:
             raise self.error
         return list(self.proposals)
@@ -187,6 +191,64 @@ def test_failing_source_is_recorded_and_cycle_continues(config, store):
     assert report.source_errors == {"bad": "Gooey unavailable"}
     assert report.new_tasks == 1 and report.selected is not None
     assert events_of(store, EventType.SOURCE_SYNC_FAILED)[0].payload["source"] == "bad"
+
+
+NOON = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+
+
+def test_cursor_is_passed_and_advanced_only_after_success(config, store):
+    source = FakeSource()
+    run(Orchestrator(config, store, sources=[source], clock=lambda: NOON))
+    run(Orchestrator(config, store, sources=[source], clock=lambda: NOON + timedelta(hours=1)))
+    assert [since for since, _ in source.calls] == [None, NOON]
+    assert datetime.fromisoformat(store.get_cursor("fake")[0]) == NOON + timedelta(hours=1)
+
+    bad = FakeSource(name="bad", error=RuntimeError("Gooey unavailable"))
+    run(Orchestrator(config, store, sources=[bad], clock=lambda: NOON))
+    assert store.get_cursor("bad") == (None, None)
+
+
+def test_dry_run_passes_flag_and_keeps_cursor(config, store):
+    source = FakeSource()
+    run(Orchestrator(config, store, sources=[source]), dry_run=True)
+    assert source.calls == [(None, True)]
+    assert store.get_cursor("fake") == (None, None)
+
+
+def test_review_proposal_lands_in_review(config, store):
+    reason = "Gooey's reply couldn't be read"
+    source = FakeSource(proposals=[TaskProposal(source="gooey", external_id="gooey-run:r2",
+                                                title=reason, review_reason=reason)])
+    orch = Orchestrator(config, store, sources=[source])
+    run(orch)
+    run(orch)
+    [task] = store.list_tasks()
+    assert (task.status, task.failure_reason) == (S.REQUIRES_HUMAN_REVIEW, reason)
+    assert len(events_of(store, EventType.TASK_STATUS_CHANGED)) == 1
+
+
+def test_dry_run_preview_shows_review_reason(config, store):
+    source = FakeSource(proposals=[TaskProposal(source="gooey", external_id="gooey-run:r2",
+                                                title="Unreadable", review_reason="no ids")])
+    report = run(Orchestrator(config, store, sources=[source]), dry_run=True)
+    assert "needs review: no ids" in report.proposal_previews[0]
+
+
+def test_corrupt_cursor_is_ignored(config, store):
+    store.set_cursor("fake", "not-a-date")
+    source = FakeSource()
+    report = run(Orchestrator(config, store, sources=[source]))
+    assert source.calls == [(None, False)] and report.finished_at is not None
+
+
+def test_configured_sources(config):
+    assert configured_sources(config, Secrets()) == []
+    with_agent = config.model_copy(update={"gooey": GooeyConfig(agent_example_id="ex1")})
+    with pytest.raises(ConfigError, match="GOOEY_API_KEY"):
+        configured_sources(with_agent, Secrets())
+    secrets = Secrets(gooey_api_url="https://api.example.test", gooey_api_key=SecretStr("k"))
+    [source] = configured_sources(with_agent, secrets)
+    assert source.name == "gooey"
 
 
 def test_concurrent_cycle_is_refused(config, store):

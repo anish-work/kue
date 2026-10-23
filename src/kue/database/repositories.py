@@ -51,11 +51,27 @@ class Store:
         ).fetchone()
         return Task.model_validate(dict(row)) if row else None
 
+    def find_existing(self, p: TaskProposal) -> Task | None:
+        """The task this proposal is already known as, by its key or by either of its ids.
+
+        The id match catches the same work reported under its other id, e.g. a Discord
+        message first seen alone and later linked to an Asana task.
+        """
+        task = self.find_by_external(p.source, p.external_id)
+        if task or not (p.asana_task_id or p.discord_message_id):
+            return task
+        row = self.conn.execute(
+            """SELECT * FROM tasks WHERE source = ? AND (asana_task_id = ? OR discord_message_id = ?)
+               ORDER BY id LIMIT 1""",
+            (p.source, p.asana_task_id, p.discord_message_id),
+        ).fetchone()
+        return Task.model_validate(dict(row)) if row else None
+
     def upsert_proposal(self, p: TaskProposal) -> tuple[Task, bool]:
-        """Create a task, or just mark it seen if (source, external_id) already exists."""
+        """Create a task, or just mark it seen if it's already known (see find_existing)."""
         now = iso(utcnow())
         with transaction(self.conn):
-            existing = self.find_by_external(p.source, p.external_id)
+            existing = self.find_existing(p)
             if existing:
                 self.conn.execute(
                     "UPDATE tasks SET last_seen_at = ? WHERE id = ?", (now, existing.id)

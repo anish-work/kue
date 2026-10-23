@@ -1,4 +1,5 @@
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from kue.cli.commands import app
@@ -25,6 +26,14 @@ def test_missing_config_exits_2(tmp_path):
     result = runner.invoke(app, ["--config", str(tmp_path / "none.yaml"), "status"])
     assert result.exit_code == 2
     assert "kue init" in result.output
+
+
+def test_run_once_fails_clearly_without_gooey_secrets(tmp_path, config_dict):
+    path = tmp_path / "gooey.yaml"
+    path.write_text(yaml.safe_dump({**config_dict, "gooey": {"agent_example_id": "ex1"}}))
+    result = runner.invoke(app, ["--config", str(path), "run-once"])
+    assert result.exit_code == 2
+    assert "GOOEY_API_KEY" in result.output
 
 
 def test_status(kue):
