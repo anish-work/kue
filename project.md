@@ -6,9 +6,9 @@ to Claude Code inside real local repositories, opens PRs, and reports back.
 
 Owner: Anish (Gooey.AI). Runs on one Mac, no cloud anything.
 
-**Current state: Phase 1 complete.** Config, SQLite, state machine, CLI,
-logging, dry-run, 70 passing tests. No discovery, no coding worker, no GitHub
-yet.
+**Current state: Phase 2 complete.** Config, SQLite, state machine, CLI,
+logging, dry-run, and discovery through one Gooey agent (`gooey/`). No coding
+worker, no GitHub yet. Phase 2 design: `docs/superpowers/specs/2026-10-23-gooey-discovery-design.md`.
 
 ---
 
@@ -70,10 +70,13 @@ src/kue/
   events/logger.py     EventType, redact(), JSON file logging
   environment/doctor.py
   cli/commands.py      all `kue` subcommands
-tests/                 conftest.py builds real temp git repos
+  gooey/
+    client.py          async agent client: start, poll, error mapping
+    discovery.py       prompt, reply contract, parsing, GooeySource
+tests/                 conftest.py builds real temp git repos and a FakeGooey
 ```
 
-Phase 2+ adds `gooey/`, `github/`, `coding/claude_code.py`, `coding/policies.py`,
+Phase 3+ adds `github/`, `coding/claude_code.py`, `coding/policies.py`,
 `orchestration/scheduler.py`.
 
 ---

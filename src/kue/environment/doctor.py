@@ -1,6 +1,7 @@
 """Environment checks for `kue doctor`. Never prints secret values."""
 from __future__ import annotations
 
+import asyncio
 import shlex
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ from kue.coding.workspace import inspect_repository
 from kue.config.models import AppConfig
 from kue.config.settings import Secrets
 from kue.database.database import connect, schema_version
+from kue.gooey.client import GooeyClient, GooeyError
 
 
 @dataclass
@@ -30,6 +32,15 @@ def _run(cmd: list[str]) -> tuple[bool, str]:
         return False, str(exc)
     text = (out.stdout or out.stderr).strip().splitlines()
     return out.returncode == 0, text[0] if text else f"exit code {out.returncode}"
+
+
+def _gooey_key_check(base_url: str, api_key: str) -> Check:
+    """Checks the key with Gooey's balance endpoint, which doesn't run anything."""
+    try:
+        balance = asyncio.run(GooeyClient(base_url, api_key).balance())
+    except GooeyError as exc:
+        return Check("Gooey API key", False, str(exc), required=False)
+    return Check("Gooey API key", True, f"valid, {balance} credits", required=False)
 
 
 def run_checks(config: AppConfig | None, config_error: str | None, secrets: Secrets) -> list[Check]:
@@ -55,7 +66,7 @@ def run_checks(config: AppConfig | None, config_error: str | None, secrets: Secr
 
     checks.append(
         Check(
-            "Gooey credentials (Phase 2)",
+            "Gooey credentials",
             bool(secrets.gooey_api_url and secrets.gooey_api_key),
             "GOOEY_API_URL and GOOEY_API_KEY set"
             if secrets.gooey_api_url and secrets.gooey_api_key
@@ -63,6 +74,16 @@ def run_checks(config: AppConfig | None, config_error: str | None, secrets: Secr
             required=False,
         )
     )
+    checks.append(
+        Check(
+            "Gooey agent",
+            config.gooey.agent_example_id is not None,
+            "set" if config.gooey.agent_example_id else "set gooey.agent_example_id in config.yaml",
+            required=False,
+        )
+    )
+    if secrets.gooey_api_url and secrets.gooey_api_key:
+        checks.append(_gooey_key_check(secrets.gooey_api_url, secrets.gooey_api_key.get_secret_value()))
 
     try:
         conn = connect(config.database.path)

@@ -92,3 +92,10 @@ def test_doctor_reports_repo(kue):
     assert "repo gooey-server" in result.output
     assert "Claude Code CLI" in result.output
     assert result.exit_code == 0, result.output  # optional tools only warn
+
+
+def test_doctor_reports_gooey_agent_not_set(kue):
+    result = kue("doctor")
+    assert "[WARN] Gooey agent" in result.output and "agent_example_id" in result.output
+    assert "Gooey API key" not in result.output  # no secrets in tests, so no network call
+    assert result.exit_code == 0, result.output

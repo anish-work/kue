@@ -5,9 +5,9 @@ Kue is a local-first autonomous engineer for your Mac. It discovers engineering 
 inside your own repositories. It opens PRs and lets GitHub auto-merge them
 once a teammate approves.
 
-**Current status: Phase 1 (foundation).** Config, database, task state
-machine, CLI, logging and dry runs all work. Discovery, coding and GitHub
-are not built yet.
+**Current status: Phase 2 (Gooey discovery).** Config, database, task state
+machine, CLI, logging, dry runs and discovery through a Gooey agent all work.
+Coding and GitHub are not built yet.
 
 ## Setup
 
@@ -18,12 +18,31 @@ pip install -e ".[dev]"
 
 kue init          # creates ~/.kue/config.yaml
 # edit the config: set repositories.gooey-server.path to your checkout
-cp .env.example ~/.kue/.env   # fill in later (Phase 2)
+cp .env.example ~/.kue/.env   # Gooey API URL and key
 kue doctor        # checks python, git, gh, claude, credentials, repos
 ```
 
 Use `--config PATH` (or the `KUE_CONFIG` environment variable) to point at a
 different config file.
+
+### Gooey discovery
+
+Kue finds work by calling one published Gooey agent that can read your Discord
+channels and Asana projects (through Composio tools you add to the agent in
+Gooey).
+
+1. Set `GOOEY_API_URL` and `GOOEY_API_KEY` in `~/.kue/.env`.
+2. Set `gooey.agent_example_id` in `~/.kue/config.yaml` to the agent's example id.
+3. Run `kue doctor`. It checks the key against Gooey's balance endpoint, which
+   doesn't run the agent.
+
+**Give the discovery agent read-only tools.** Kue can't see or limit which tools a
+Gooey agent has, so an agent that can post to Discord or edit Asana could do so
+while Kue is only asking it to look. Asana updates (Phase 7) will use a separate
+agent.
+
+`kue run-once --dry-run` calls the agent for real, so it costs Gooey credits and
+creates a run on Gooey's side, but it writes nothing in Kue.
 
 ## Commands
 
@@ -49,8 +68,9 @@ different config file.
 
 1. **Recover.** Any task left mid-work (after a crash or restart) moves to
    `REQUIRES_HUMAN_REVIEW`. The system never resumes blindly.
-2. **Discover.** It asks each discovery source for proposals and deduplicates
-   them on `(source, external_id)`. There are no sources in Phase 1.
+2. **Discover.** It asks each discovery source for work since its last
+   successful fetch and deduplicates on `(source, external_id)`, or on the same
+   Asana or Discord id. The only source is the Gooey agent (see above).
 3. **Triage.** Tasks whose repository resolves to an enabled repo become
    `QUEUED`; the rest go to review.
 4. **Select.** It picks the lowest priority number, then the oldest task.
@@ -86,8 +106,10 @@ recorded as an event in the same transaction.
 - **The agent works in your own checkout** (`workspace.mode: in_place`). It
   runs only when the tree is clean, and in later phases it will switch back to
   your original branch afterwards.
-- **Gooey returns free text.** Phase 2 will ask for a JSON block, validate it
-  with Pydantic, keep the raw reply, and send anything unparseable to review.
+- **Gooey returns free text.** Kue asks for one fenced JSON block, validates
+  each task with Pydantic, keeps every raw reply, and asks once more if the
+  reply can't be read. Anything still unreadable becomes a task in
+  `REQUIRES_HUMAN_REVIEW`.
 - **Asana updates go through Gooey.** They are recorded as requested, then
   confirmed on the next sync.
 - **Secrets live only in the environment** (`~/.kue/.env`),
@@ -98,6 +120,7 @@ recorded as an event in the same transaction.
 - Database: `~/.kue/state.db` (tables `tasks`, `runs`,
   `events`, `discovery_cursor`, `daemon_state`)
 - Logs: `~/.kue/logs/kue.log` (JSON lines, rotated)
+- Gooey replies: `~/.kue/replies/<run_id>.txt` (raw text, one file per agent run)
 
 ## Tests
 
