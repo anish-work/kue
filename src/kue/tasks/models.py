@@ -71,6 +71,8 @@ class TaskProposal(BaseModel):
     priority: int = Field(default=Priority.P4, ge=0, le=5)
     asana_task_id: str | None = None
     discord_message_id: str | None = None
+    # Set when the source couldn't fully read this work; the task starts in review.
+    review_reason: str | None = None
 
 
 class Run(BaseModel):
