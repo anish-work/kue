@@ -9,6 +9,14 @@ from kue.database.database import connect
 from kue.database.repositories import Store
 
 
+@pytest.fixture(autouse=True)
+def no_real_secrets(monkeypatch):
+    """Tests never see a developer's real Gooey key, from the environment or a .env file."""
+    monkeypatch.delenv("GOOEY_API_URL", raising=False)
+    monkeypatch.delenv("GOOEY_API_KEY", raising=False)
+    monkeypatch.setattr("kue.config.settings.load_dotenv", lambda *a, **k: False)
+
+
 def _git(path: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
 

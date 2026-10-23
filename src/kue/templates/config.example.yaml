@@ -46,6 +46,12 @@ claude:
 github:
   command: "gh"
 
+gooey:
+  # Published Gooey agent that reads Discord and Asana. Give it read-only tools.
+  # Leave blank to turn Gooey discovery off.
+  agent_example_id: ""
+  timeout_minutes: 10
+
 database:
   path: "~/.kue/state.db"
 

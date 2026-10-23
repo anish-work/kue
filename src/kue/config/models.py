@@ -69,6 +69,16 @@ class LimitsConfig(_Strict):
     task_timeout_minutes: int = Field(default=45, ge=1)
 
 
+class GooeyConfig(_Strict):
+    agent_example_id: str | None = None
+    timeout_minutes: int = Field(default=10, ge=1)
+
+    @field_validator("agent_example_id", mode="before")
+    @classmethod
+    def _blank_is_none(cls, v: str | None) -> str | None:
+        return v.strip() or None if isinstance(v, str) else v
+
+
 class CommandConfig(_Strict):
     command: str
 
@@ -100,6 +110,7 @@ class AppConfig(_Strict):
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     claude: CommandConfig = Field(default_factory=lambda: CommandConfig(command="claude"))
     github: CommandConfig = Field(default_factory=lambda: CommandConfig(command="gh"))
+    gooey: GooeyConfig = Field(default_factory=GooeyConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from kue.config.models import AppConfig
 from kue.config.settings import ConfigError, load_config, template_text
@@ -14,6 +15,20 @@ def test_template_is_valid_config():
     assert "gooey-server" in cfg.repositories
     assert cfg.autonomy.merge_mode == "when_approved"
     assert cfg.workspace.dirty_tree_action == "skip"
+    assert cfg.gooey.agent_example_id is None
+
+
+def test_gooey_section_defaults_to_off():
+    cfg = AppConfig.model_validate({})
+    assert cfg.gooey.agent_example_id is None and cfg.gooey.timeout_minutes == 10
+
+
+def test_gooey_blank_example_id_is_none_and_timeout_is_checked():
+    assert AppConfig.model_validate({"gooey": {"agent_example_id": "  "}}).gooey.agent_example_id is None
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"gooey": {"timeout_minutes": 0}})
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate({"gooey": {"agent": "x"}})
 
 
 def test_root_example_matches_packaged_template():
