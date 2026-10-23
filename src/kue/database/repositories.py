@@ -52,30 +52,48 @@ class Store:
         return Task.model_validate(dict(row)) if row else None
 
     def find_existing(self, p: TaskProposal) -> Task | None:
-        """The task this proposal is already known as, by its key or by either of its ids.
+        """The task this proposal is already known as.
 
-        The id match catches the same work reported under its other id, e.g. a Discord
-        message first seen alone and later linked to an Asana task.
+        Matches the key, then the same Asana task, then the same Discord message, but a
+        Discord match never crosses to a task tied to a different Asana task: one
+        message often mentions several of them.
         """
         task = self.find_by_external(p.source, p.external_id)
         if task or not (p.asana_task_id or p.discord_message_id):
             return task
         row = self.conn.execute(
-            """SELECT * FROM tasks WHERE source = ? AND (asana_task_id = ? OR discord_message_id = ?)
+            """SELECT * FROM tasks WHERE source = :source AND (
+                   asana_task_id = :asana
+                   OR (discord_message_id = :discord
+                       AND (asana_task_id IS NULL OR :asana IS NULL OR asana_task_id = :asana)))
                ORDER BY id LIMIT 1""",
-            (p.source, p.asana_task_id, p.discord_message_id),
+            {"source": p.source, "asana": p.asana_task_id, "discord": p.discord_message_id},
         ).fetchone()
         return Task.model_validate(dict(row)) if row else None
 
     def upsert_proposal(self, p: TaskProposal) -> tuple[Task, bool]:
-        """Create a task, or just mark it seen if it's already known (see find_existing)."""
+        """Create a task, or mark a known one seen (see find_existing).
+
+        A known task also learns an Asana or Discord id it didn't have yet, so the link
+        is kept and a second Asana task under the same message stays separate.
+        """
         now = iso(utcnow())
         with transaction(self.conn):
             existing = self.find_existing(p)
             if existing:
+                learned = {
+                    "asana_task_id": p.asana_task_id if existing.asana_task_id is None else None,
+                    "discord_message_id": p.discord_message_id if existing.discord_message_id is None else None,
+                }
                 self.conn.execute(
-                    "UPDATE tasks SET last_seen_at = ? WHERE id = ?", (now, existing.id)
+                    """UPDATE tasks SET last_seen_at = ?,
+                           asana_task_id = COALESCE(asana_task_id, ?),
+                           discord_message_id = COALESCE(discord_message_id, ?)
+                       WHERE id = ?""",
+                    (now, learned["asana_task_id"], learned["discord_message_id"], existing.id),
                 )
+                if any(learned.values()):
+                    self._insert_event(EventType.TASK_LINKED, existing.id, {"external_id": p.external_id, **learned})
                 return self._require(existing.id), False
             cur = self.conn.execute(
                 """INSERT INTO tasks (external_id, source, title, description, repository,

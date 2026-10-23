@@ -89,7 +89,10 @@ Phase 3+ adds `github/`, `coding/claude_code.py`, `coding/policies.py`,
 - `Store.update_task()` only accepts fields in the `_UPDATABLE` allowlist, and
   `status` is deliberately not one of them.
 - **Dedup key is `(source, external_id)`**, enforced by a UNIQUE constraint.
-  Re-seeing a task bumps `last_seen_at` and nothing else.
+  `Store.find_existing` also matches the same Asana task, or the same Discord
+  message unless that task belongs to a different Asana task. Re-seeing a task
+  bumps `last_seen_at` and fills in an Asana or Discord id it didn't have
+  (`TASK_LINKED` event); nothing else changes.
 - **Crash recovery:** anything found in `WORKER_BUSY` at the start of a cycle
   is moved to `REQUIRES_HUMAN_REVIEW`. Kue never resumes interrupted work blindly.
 - **One task at a time.** If any task is in `WORKER_BUSY`, the cycle selects nothing.

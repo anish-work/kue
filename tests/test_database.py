@@ -39,10 +39,27 @@ def test_upsert_matches_on_either_id_within_source(store):
         proposal("asana:7", source="gooey", asana_task_id="7", discord_message_id="99")
     )
     assert not created and again.id == first.id
-    assert again.external_id == "discord:99" and again.asana_task_id is None
+    assert again.external_id == "discord:99" and again.asana_task_id == "7"  # the link is learned
     assert len(store.list_tasks()) == 1
     _, other_source = store.upsert_proposal(proposal("asana:7", source="manual", asana_task_id="7", discord_message_id="99"))
     assert other_source
+
+
+def test_upsert_keeps_different_asana_tasks_apart(store):
+    store.upsert_proposal(proposal("asana:111", source="gooey", asana_task_id="111", discord_message_id="99"))
+    _, created = store.upsert_proposal(proposal("asana:222", source="gooey", asana_task_id="222", discord_message_id="99"))
+    assert created
+    assert sorted(t.asana_task_id for t in store.list_tasks()) == ["111", "222"]
+
+
+def test_discord_task_links_to_one_asana_task_only(store):
+    store.upsert_proposal(proposal("discord:99", source="gooey", discord_message_id="99"))
+    _, linked = store.upsert_proposal(proposal("asana:1", source="gooey", asana_task_id="1", discord_message_id="99"))
+    _, second = store.upsert_proposal(proposal("asana:2", source="gooey", asana_task_id="2", discord_message_id="99"))
+    assert (linked, second) == (False, True)
+    assert [e.payload for e in store.list_events() if e.event_type == EventType.TASK_LINKED] == [
+        {"external_id": "asana:1", "asana_task_id": "1", "discord_message_id": None}
+    ]
 
 
 def test_same_external_id_different_source_is_separate(store):

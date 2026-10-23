@@ -1,6 +1,6 @@
 import pytest
 
-from kue.gooey.discovery import ReplyFormatError, extract_tasks, proposals_from_items
+from kue.gooey.discovery import ReplyFormatError, build_prompt, extract_tasks, proposals_from_items
 
 FENCE = "```"
 
@@ -10,6 +10,11 @@ FENCE = "```"
     (f'{FENCE}\n{{"tasks": []}}\n{FENCE}', []),
     (f'{FENCE}json\n{{"tasks": [{{"title": "old"}}]}}\n{FENCE}\nfixed:\n{FENCE}json\n{{"tasks": [{{"title": "new"}}]}}\n{FENCE}',
      [{"title": "new"}]),
+    # backticks inside a JSON string (a pasted traceback) don't end the block
+    (f'{FENCE}json\n{{"tasks": [{{"title": "a", "description": "{FENCE}\\nTraceback\\n{FENCE}"}}]}}\n{FENCE}',
+     [{"title": "a", "description": f"{FENCE}\nTraceback\n{FENCE}"}]),
+    # an inline fence in the prose before the block doesn't start one
+    (f'I looked at {FENCE}routers/api.py{FENCE} first.\n{FENCE}json\n{{"tasks": []}}\n{FENCE}', []),
 ])
 def test_extract_tasks(reply, expected):
     assert extract_tasks(reply) == expected
@@ -65,6 +70,16 @@ def test_items_without_usable_ids_are_keyed_by_position():
     assert (bad_id.external_id, text.external_id) == ("gooey-run:r1:0", "gooey-run:r1:1")
     assert bad_id.review_reason and text.review_reason
     assert text.title == "Unreadable task from Gooey"
+
+
+def test_invalid_item_keeps_its_repository_and_priority():
+    p = one({"title": "", "asana_task_id": "1", "repository": "gooey-server", "priority": 2})
+    assert p.review_reason and (p.repository, p.priority) == ("gooey-server", 2)
+
+
+def test_echoed_prompt_example_is_not_a_real_task():
+    items = extract_tasks(build_prompt(None, ["gooey-server"]))
+    assert items and all(p.review_reason for p in proposals_from_items(items, run_id="r1"))
 
 
 def test_long_invalid_item_description_is_capped():

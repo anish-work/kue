@@ -141,11 +141,15 @@ names, or null), `priority` (0–5, the meanings from `tasks/models.py`),
   "Unreadable task from Gooey"), the item's JSON as the description, and a
   `review_reason`. Its `external_id` is the id-based one when a valid id exists, and
   `gooey-run:<run_id>:<index>` otherwise.
-- Dedup also matches on either id within the same source. If Gooey first reports
-  Discord message X alone and later reports it linked to Asana task Y, the second
-  report finds the first task through X and only bumps `last_seen_at`. The newly
-  learned Asana id isn't copied onto the existing task; Phase 7 adds that when Asana
-  write-back needs it. This lives in `Store.upsert_proposal`.
+- Dedup also matches on the same Asana task, or on the same Discord message, within
+  the same source. A Discord match never crosses to a task tied to a *different*
+  Asana task, because one message often mentions several. When a known task is
+  matched, it also learns any Asana or Discord id it didn't have yet (recorded as a
+  `TASK_LINKED` event). So: Discord message X alone, then X with Asana A1, is one
+  task that now knows A1; X with Asana A2 after that is a second task. Ids already
+  set are never overwritten. This lives in `Store.find_existing` / `upsert_proposal`.
+  (Revised after the final review: the first version matched on either id and could
+  silently merge two Asana tasks that shared a Discord message.)
 - A repository name Gooey invents is not special-cased: triage already sends unknown
   repos to review with "Repository 'x' is not in the config."
 

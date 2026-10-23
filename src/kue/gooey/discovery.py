@@ -22,7 +22,9 @@ log = get_logger("gooey")
 SOURCE = "gooey"
 MAX_DESCRIPTION = 4000
 UNREADABLE_TITLE = "Unreadable task from Gooey"
-_FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+# Fences must start a line. JSON strings can't hold raw newlines, so backticks inside
+# a value (a pasted traceback) or inline in the prose never open or close a block.
+_FENCE = re.compile(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE)
 _ID = re.compile(r"^\d{1,32}$")  # Asana gids and Discord snowflakes are both numeric
 
 
@@ -39,9 +41,9 @@ that's already done.
 Reply with exactly one fenced JSON block in this shape:
 
 ```json
-{{"tasks": [{{"title": "Fix the Twilio webhook retry crash", "description": "What's wrong, \
-what done looks like, and links", "repository": "{example_repository}", "priority": 1, \
-"asana_task_id": "1203456789012345", "discord_message_id": "1157123456789012345"}}]}}
+{{"tasks": [{{"title": "One line saying what needs doing", "description": "What's wrong, \
+what done looks like, and links", "repository": "<one of the repositories above>", \
+"priority": 4, "asana_task_id": "<the Asana task's gid>", "discord_message_id": null}}]}}
 ```
 
 - title: one short line saying what needs doing.
@@ -67,11 +69,7 @@ def build_prompt(since: datetime | None, repositories: list[str]) -> str:
         window = "in the last 24 hours"
     else:
         window = f"since {since.astimezone(UTC).isoformat(timespec='seconds')}"
-    return _PROMPT.format(
-        since=window,
-        repositories=", ".join(repositories) or "(none are configured)",
-        example_repository=repositories[0] if repositories else "gooey-server",
-    )
+    return _PROMPT.format(since=window, repositories=", ".join(repositories) or "(none are configured)")
 
 
 class GooeySource:
@@ -178,10 +176,24 @@ class _ProposedTask(BaseModel):
     @field_validator("priority", mode="before")
     @classmethod
     def _fallback_priority(cls, v: Any) -> int:
-        # A bad priority isn't worth a human's attention; treat it as normal work.
-        if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 5:
-            return v
-        return Priority.P4
+        return _priority_or_normal(v)
+
+
+def _priority_or_normal(v: Any) -> int:
+    # A bad priority isn't worth a human's attention; treat it as normal work.
+    if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 5:
+        return v
+    return Priority.P4
+
+
+def _salvaged(item: dict[str, Any]) -> dict[str, Any]:
+    """What an invalid item still says about where the work goes, so approving it can work."""
+    repository = item.get("repository")
+    if isinstance(repository, str) and repository.strip():
+        repository = repository.strip()[:100]
+    else:
+        repository = None
+    return {"repository": repository, "priority": _priority_or_normal(item.get("priority"))}
 
 
 def _proposal(item: Any, *, fallback_id: str) -> TaskProposal:
@@ -204,7 +216,7 @@ def _proposal(item: Any, *, fallback_id: str) -> TaskProposal:
     try:
         task = _ProposedTask.model_validate(item)
     except ValidationError as exc:
-        return TaskProposal(**base, title=_title_hint(item), description=_dump(item),
+        return TaskProposal(**base, **_salvaged(item), title=_title_hint(item), description=_dump(item),
                             review_reason=f"Gooey's task was invalid: {_summary(exc)}")
     if not (asana or discord):
         return TaskProposal(**base, title=task.title, description=_dump(item),

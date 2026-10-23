@@ -3,7 +3,7 @@ import asyncio
 import httpx
 import pytest
 
-from kue.gooey.client import AgentReply, GooeyConnectAccount, GooeyError
+from kue.gooey.client import AgentReply, GooeyClient, GooeyConnectAccount, GooeyError
 
 
 def run(coro):
@@ -36,8 +36,9 @@ def test_failed_status_raises_with_detail_and_link(fake_gooey):
 
 @pytest.mark.parametrize("code, body, expected", [
     (403, {"detail": {"error": "Invalid API Key."}}, "GOOEY_API_KEY"),
-    (401, {"detail": {"error": "Invalid Authorization header."}}, "GOOEY_API_KEY"),
-    (402, {"detail": {"error": "Doh! You need to purchase additional credits."}}, "out of credits"),
+    (401, {"detail": {"error": "Invalid Authorization header."}}, "Invalid Authorization header."),
+    (402, {"detail": {"error": "Doh! You need to purchase additional credits."}}, "purchase additional credits"),
+    (402, {"detail": {"error": "This model is only available to paid users."}}, "only available to paid users"),
     (429, {"detail": {"error": "Try again in 5 minutes."}}, "Try again in 5 minutes."),
     (500, {"detail": {"error": "kaboom"}}, "500"),
     (422, {"detail": [{"loc": ["body", "input_prompt"], "msg": "bad"}]}, "422"),
@@ -59,6 +60,14 @@ def test_connect_account_error_carries_link(fake_gooey):
     assert "https://connect.example/abc" in str(exc.value)
 
 
+def test_auth_error_during_a_run_is_not_blamed_on_the_key(fake_gooey):
+    fake_gooey.started()
+    fake_gooey.queue("status", 401, {"detail": {"error": "Please sign in to OneDrive to continue."}})
+    with pytest.raises(GooeyError) as exc:
+        run(fake_gooey.client().run_agent("ex1", "hi", []))
+    assert "OneDrive" in str(exc.value) and "GOOEY_API_KEY" not in str(exc.value)
+
+
 def test_timeout_raises_with_link(fake_gooey):
     fake_gooey.started()
     for _ in range(20):
@@ -76,8 +85,9 @@ def test_empty_output_text_is_an_error(fake_gooey):
         run(fake_gooey.client().run_agent("ex1", "hi", []))
 
 
-def test_unsafe_run_id_is_rejected(fake_gooey):
-    fake_gooey.started(run_id="../x")
+@pytest.mark.parametrize("run_id", ["../x", "r1\n", None, 123])
+def test_unsafe_run_id_is_rejected(fake_gooey, run_id):
+    fake_gooey.queue("start", 202, {"run_id": run_id, "web_url": "https://gooey.example/x"})
     with pytest.raises(GooeyError):
         run(fake_gooey.client().run_agent("ex1", "hi", []))
     assert len(fake_gooey.requests) == 1
@@ -87,6 +97,17 @@ def test_network_error_becomes_gooey_error(fake_gooey):
     fake_gooey.raise_error = httpx.ConnectError("connection refused")
     with pytest.raises(GooeyError, match="connection refused"):
         run(fake_gooey.client().run_agent("ex1", "hi", []))
+
+
+def test_network_error_without_text_names_the_error(fake_gooey):
+    fake_gooey.raise_error = httpx.ReadTimeout("")
+    with pytest.raises(GooeyError, match="ReadTimeout"):
+        run(fake_gooey.client().run_agent("ex1", "hi", []))
+
+
+def test_malformed_base_url_is_a_gooey_error():
+    with pytest.raises(GooeyError, match="GOOEY_API_URL"):
+        run(GooeyClient("http://[::1", "k").balance())
 
 
 def test_balance(fake_gooey):
